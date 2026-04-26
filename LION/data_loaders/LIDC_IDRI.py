@@ -3,7 +3,7 @@
 # License : BSD-3
 #
 # Author  : Emilien Valat
-# Modifications: Michelle Limbach, Ander Biguri
+# Modifications: Michelle Limbach, Ander Biguri, Tianzhen Peng
 # =============================================================================
 
 
@@ -77,10 +77,11 @@ class LIDC_IDRI(Dataset):
 
         Parameters:
             - device (torch.device): Selects the device to use for the data loader.
-            - task (str): Defines pipeline on how to use data. Distinguish between "joint", "end_to_end", "segmentation", "reconstruction" and "diagnostic".
+            - task (str): Defines pipeline on how to use data. Distinguish between "joint", "end_to_end", "segmentation", "reconstruction", "image_only" and "diagnostic".
                           Dataset will return, for each task:
                           "segmentation"    -> (image, segmentation_label)
                           "reconstruction"  -> (sinogram, image_label)
+                          "image_only"      -> image tensor only
                           "diagnostic"      -> (segmented_nodule, diagnostic_label)
                           "joint"           -> ?????
                           "end_to_end"      -> ?????
@@ -112,10 +113,11 @@ class LIDC_IDRI(Dataset):
             "end_to_end",
             "segmentation",
             "reconstruction",
+            "image_only",
             "diagnostic",
-        ], f'task argument {task} not in ["joint", "end_to_end", "segmentation", "reconstruction", "diagnostic"]'
+        ], f'task argument {task} not in ["joint", "end_to_end", "segmentation", "reconstruction", "image_only", "diagnostic"]'
 
-        if task not in ["segmentation", "reconstruction", "end_to_end"]:
+        if task not in ["segmentation", "reconstruction", "end_to_end", "image_only"]:
             raise NotImplementedError(f"task {task} not implemented yet")
 
         if (
@@ -337,7 +339,7 @@ class LIDC_IDRI(Dataset):
         # segmentation specific
         param.clevel = 0.5
         param.annotation = "consensus"
-        param.device = torch.cuda.current_device()
+        param.device = torch.cuda.current_device() if torch.cuda.is_available() else torch.device("cpu")
         param.geometry = geometry
         return param
 
@@ -367,7 +369,12 @@ class LIDC_IDRI(Dataset):
         )  # Empty dict which should contain patient id as key and slice ids as array of values
 
         if num_slices_per_patient == -1:
-            num_slices_per_patient = 1000
+            for patient_id in patient_list:
+                patient_id_to_slices_to_load_dict[patient_id] = list(
+                    non_nodule_slices_dict[patient_id]
+                ) + list(nodule_slices_dict[patient_id])
+                patient_id_to_slices_to_load_dict[patient_id].sort()
+            return patient_id_to_slices_to_load_dict
 
         for patient_id in patient_list:  # Loop over every patient
             number_of_slices = min(
@@ -558,6 +565,7 @@ class LIDC_IDRI(Dataset):
             "end_to_end",
             "segmentation",
             "reconstruction",
+            "image_only",
         ]:
             reconstruction_tensor = self.get_reconstruction_tensor(file_path)
             if self.image_transform is not None:
@@ -573,6 +581,9 @@ class LIDC_IDRI(Dataset):
             if self.sinogram_transform is not None:
                 sinogram = self.sinogram_transform(sinogram)
             return sinogram, reconstruction_tensor
+
+        elif self.params.task == "image_only":
+            return reconstruction_tensor
 
         elif self.params.task == "diagnostic":
             return self.patients_diagnosis_dictionary[patient_id]
