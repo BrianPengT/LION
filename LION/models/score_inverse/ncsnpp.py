@@ -17,10 +17,11 @@ References
 import torch
 import torch.nn as nn
 from .layer import default_num_groups, GaussianFourierProjection, SelfAttn, Conv3x3, Combine, Upsample, Downsample, ResnetBlock
+from .sde import SimpleForwardSDE
 
 class NCSNpp(nn.Module):
     def __init__(self,
-                 image_size=512,
+                 image_resolution=512,
                  num_channels=1,
                  nf=16,
                  ch_mult=(1, 2, 4, 8, 16, 32, 32),
@@ -63,7 +64,7 @@ class NCSNpp(nn.Module):
             for i_block in range(num_res_blocks):
                 out_ch = nf * mult
                 self.horizontal_rbs_down.append(resnetblock(chs[-1], out_ch))
-                if image_size in attn_resolutions:
+                if image_resolution in attn_resolutions:
                     self.horizontal_sas_down.append(selfattn(out_ch))
                 chs.append(out_ch)
 
@@ -71,7 +72,7 @@ class NCSNpp(nn.Module):
                 self.rbs_down.append(resnetblock(chs[-1], chs[-1], down=True))
                 self.combs_down.append(Combine(skip_ch=num_channels, main_ch=chs[-1]))
                 chs.append(chs[-1])
-                image_size //= 2
+                image_resolution //= 2
         
         self.bottom_res1 = resnetblock(chs[-1], chs[-1])
         self.bottom_sa = selfattn(chs[-1])
@@ -86,7 +87,7 @@ class NCSNpp(nn.Module):
             for i_block in range(num_res_blocks + 1):
                 out_ch = nf * mult
                 self.horizontal_rbs_up.append(resnetblock(in_ch + chs.pop(), out_ch))
-                if image_size in attn_resolutions:
+                if image_resolution in attn_resolutions:
                     self.horizontal_sas_up.append(selfattn(out_ch))
                 in_ch = out_ch
 
@@ -94,9 +95,19 @@ class NCSNpp(nn.Module):
 
             if i_level_r != len(ch_mult) - 1:
                 self.rbs_up.append(resnetblock(in_ch, in_ch, up=True))
-            image_size *= 2
+            image_resolution *= 2
                 
     def forward(self, x, noise_level):
+        """
+        Forward pass of the model.
+        
+        Args:
+            x: Tensor of shape (B, C, H, W), the input image.
+            noise_level: Tensor of shape (B,), the noise level for each sample in the batch
+        
+        Returns:
+            Tensor of shape (B, C, H, W), the output score function.
+        """
         temb = self.temb_gfp(torch.log(noise_level))
         temb = self.temb_mlp(temb)
         
@@ -141,3 +152,18 @@ class NCSNpp(nn.Module):
         if self.scale_by_sigma:
             h = h / noise_level.view(-1, 1, 1, 1)
         return h
+
+def get_score_fn(model: nn.Module, sde: SimpleForwardSDE):
+    """
+    Returns a function that computes the score for a given input and time.
+    
+    Args:
+        model: the score-based model, which accepts (x, noise_level) as input and outputs the score function.
+        sde: the forward SDE to be used for training.
+    
+    Returns:
+        A function that takes (x, t) as input and returns the score function.
+    """
+    def score_fn(x, t):
+        return model(x, sde.beta(t))
+    return score_fn
